@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HKYCAA QR Scanner</title>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.9.1/font/bootstrap-icons.css">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    body {
+      background: #212529;
+      color: #f8f9fa;
+    }
+    #qr-reader {
+      width: 100%;
+      max-width: 500px;
+      margin-top: 1rem;
+    }
+    .toast-msg {
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #198754;
+      color: #fff;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: .95rem;
+      box-shadow: 0 2px 6px rgba(0,0,0,.25);
+      opacity: 0;
+      animation: toastPop 1.6s forwards;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    @keyframes toastPop {
+      0%   { transform: translate(-50%, 20px); opacity: 0; }
+      15%  { transform: translate(-50%, 0); opacity: 1; }
+      85%  { opacity: 1; }
+      100% { opacity: 0; }
+    }
+    .flash-success {
+      animation: flashGreen 0.6s ease-out;
+    }
+    @keyframes flashGreen {
+      0%   { background-color: #d1e7dd; }
+      50%  { background-color: #b6dfca; }
+      100% { background-color: transparent; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar sticky-top navbar-dark bg-primary">
+    <div class="container-fluid">
+      <span class="navbar-brand mx-auto">
+        <i class="bi bi-card-checklist"></i> HKYCAA QR Scanner
+      </span>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div id="qr-reader"></div>
+
+    <div class="mt-3 mb-2">
+      <span class="badge bg-warning text-dark" id="scanTargetBadge">Currently scanning: Student Code</span>
+    </div>
+
+    <form id="InventoryForm" class="mt-3">
+      <div class="mb-3 input-group">
+        <span class="input-group-text bg-primary text-white"><i class="bi bi-qr-code-scan"></i></span>
+        <input type="text" class="form-control" id="studentCode" placeholder="Scan Student Code" readonly>
+        <button type="button" class="btn btn-outline-light" onclick="setScanTarget('studentCode')">Scan Student Code</button>
+      </div>
+
+      <div class="mb-3 input-group">
+        <span class="input-group-text bg-primary text-white"><i class="bi bi-truck"></i></span>
+        <input type="text" class="form-control" id="sfNumber" placeholder="Scan SF number" readonly>
+        <button type="button" class="btn btn-outline-light" onclick="setScanTarget('sfNumber')">Scan SF Number</button>
+      </div>
+
+      <div class="mb-3 input-group">
+        <span class="input-group-text bg-primary text-white"><i class="bi bi-person-badge"></i></span>
+        <select class="form-select" id="staffResponsible" required>
+          <option value="" selected disabled>Select staff responsible</option>
+          <option value="Lena">Lena</option>
+          <option value="Jennifer">Jennifer</option>
+          <option value="Anna">Anna</option>
+          <option value="Dora">Dora</option>
+          <option value="Cherry">Cherry</option>
+          <option value="Max">Max</option>
+          <option value="Natalie">Natalie</option>
+        </select>
+      </div>
+
+      <div class="mb-3 input-group">
+        <span class="input-group-text bg-primary text-white"><i class="bi bi-box-fill"></i></span>
+        <input type="text" class="form-control" id="specialNotes" placeholder="Special Notes">
+      </div>
+
+      <button type="submit" class="btn btn-primary mb-3 w-100" id="submitBtn">Submit</button>
+    </form>
+  </div>
+
+<script>
+  const API_URL = "https://script.google.com/macros/s/AKfycbzDXGHp24bSQnsgdwpOz_1i2LPgoLEj-hWUsJWvMo5VyeGL-NeBXyBPuaGOkeB3AWw/exec";
+
+  let qrScanner;
+  let lastResult = "";
+  let lastScanTime = 0;
+  let currentScanTarget = "studentCode";
+
+  function toast(msg = "✓ Saved") {
+    const t = document.createElement("div");
+    t.className = "toast-msg";
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 1600);
+  }
+
+  function setScanTarget(target) {
+    currentScanTarget = target;
+    updateScanTargetBadge();
+  }
+
+  function updateScanTargetBadge(extraText = "") {
+    const badge = document.getElementById("scanTargetBadge");
+    let baseText = currentScanTarget === "studentCode"
+      ? "Currently scanning: Student Code"
+      : "Currently scanning: SF number";
+    badge.textContent = extraText ? `${baseText} | ${extraText}` : baseText;
+  }
+
+  function extractSfNumber(text) {
+    const match = text.match(/'k5':'([^']+)'/);
+    return match ? match[1] : text;
+  }
+
+  function restoreStaffSelection() {
+    const saved = localStorage.getItem("staffResponsible");
+    if (saved) {
+      const staffField = document.getElementById("staffResponsible");
+      if (staffField) {
+        staffField.value = saved;
+      }
+    }
+  }
+
+  async function startScanner() {
+    try {
+      updateScanTargetBadge("Loading camera...");
+      qrScanner = new Html5Qrcode("qr-reader");
+
+      const cameras = await Html5Qrcode.getCameras();
+      if (!cameras || cameras.length === 0) throw new Error("No camera found");
+
+      let selectedCamera = cameras[cameras.length - 1].id;
+      const backCam = cameras.find(cam => /back|rear|environment/gi.test(cam.label || ""));
+      if (backCam) selectedCamera = backCam.id;
+
+      await qrScanner.start(
+        selectedCamera,
+        {
+          fps: 10,
+          qrbox: 250,
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.QR_CODE,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8
+          ]
+        },
+        onScanSuccess,
+        () => {}
+      );
+
+      updateScanTargetBadge();
+    } catch (err) {
+      console.error(err);
+      updateScanTargetBadge("Camera failed");
+      toast("Camera failed");
+    }
+  }
+
+  function onScanSuccess(decodedText) {
+    const now = Date.now();
+    if (decodedText === lastResult && now - lastScanTime < 1000) return;
+
+    lastResult = decodedText;
+    lastScanTime = now;
+
+    const field = document.getElementById(currentScanTarget);
+    if (!field) return;
+
+    if (currentScanTarget === "sfNumber") {
+      field.value = extractSfNumber(decodedText);
+    } else {
+      field.value = decodedText;
+    }
+
+    navigator.vibrate?.(80);
+
+    field.classList.add("flash-success");
+    setTimeout(() => field.classList.remove("flash-success"), 600);
+
+    if (currentScanTarget === "studentCode") {
+      currentScanTarget = "sfNumber";
+      updateScanTargetBadge();
+    }
+  }
+
+  document.getElementById("InventoryForm").addEventListener("submit", async function(e) {
+    e.preventDefault();
+
+    const studentCode = document.getElementById("studentCode").value.trim();
+    const sfNumber = document.getElementById("sfNumber").value.trim();
+    const staffResponsible = document.getElementById("staffResponsible").value.trim();
+    const specialNotes = document.getElementById("specialNotes").value.trim();
+    const btn = document.getElementById("submitBtn");
+
+    if (!studentCode) {
+      toast("Please scan Student Code");
+      return;
+    }
+    if (!sfNumber) {
+      toast("Please scan SF number");
+      return;
+    }
+    if (!staffResponsible) {
+      toast("Please select staff");
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+
+    try {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8"
+        },
+        body: JSON.stringify({
+          studentCode,
+          sfNumber,
+          staffResponsible,
+          specialNotes
+        })
+      });
+
+      const data = await res.json();
+
+      if (!data.success) {
+        if (data.duplicate) {
+          toast("⚠ Duplicate Student Code");
+          return;
+        }
+        throw new Error(data.error || "Unknown error");
+      }
+
+      toast("✓ Saved");
+
+      const savedStaff = document.getElementById("staffResponsible").value;
+      document.getElementById("InventoryForm").reset();
+      document.getElementById("staffResponsible").value = savedStaff;
+
+      lastResult = "";
+      lastScanTime = 0;
+      currentScanTarget = "studentCode";
+      updateScanTargetBadge();
+    } catch (err) {
+      console.error(err);
+      toast("⚠ Error - try again");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Submit";
+    }
+  });
+
+  document.getElementById("staffResponsible").addEventListener("change", function() {
+    localStorage.setItem("staffResponsible", this.value);
+  });
+
+  updateScanTargetBadge();
+  restoreStaffSelection();
+  startScanner();
+</script>
+</body>
+</html>
