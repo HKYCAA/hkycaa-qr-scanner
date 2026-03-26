@@ -115,29 +115,38 @@
   let lastResult = "";
   let lastScanTime = 0;
   let currentScanTarget = "studentCode";
+  let pendingPayload = null;
 
-  let pendingPayload = null; // for duplicate override
-
-  function toast(msg = "✓ Saved") {
+  function toast(msg = "✓ Saved", duration = 1800) {
     const t = document.createElement("div");
     t.className = "toast-msg";
     t.textContent = msg;
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), 1600);
+    setTimeout(() => t.remove(), duration);
   }
 
   function beepSuccess() {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(800, ctx.currentTime);
-    osc.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.08);
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.08);
+    } catch (e) {
+      console.log("beep skipped");
+    }
   }
 
-  function haptic() {
-    navigator.vibrate?.([60]);
+  function haptic(pattern = [60]) {
+    navigator.vibrate?.(pattern);
   }
 
   function setScanTarget(target) {
@@ -147,10 +156,13 @@
 
   function updateScanTargetBadge(extraText = "") {
     const badge = document.getElementById("scanTargetBadge");
+    if (!badge) return;
+
     let baseText = currentScanTarget === "studentCode"
-      ? "Student Code"
-      : "SF number";
-    badge.textContent = extraText ? `${baseText} | ${extraText}` : `Scanning: ${baseText}`;
+      ? "Currently scanning: Student Code"
+      : "Currently scanning: SF number";
+
+    badge.textContent = extraText ? `${baseText} | ${extraText}` : baseText;
   }
 
   function extractSfNumber(text) {
@@ -161,18 +173,27 @@
   function restoreStaffSelection() {
     const saved = localStorage.getItem("staffResponsible");
     if (saved) {
-      document.getElementById("staffResponsible").value = saved;
+      const staffField = document.getElementById("staffResponsible");
+      if (staffField) staffField.value = saved;
     }
   }
 
-  function addScanHistory(entry) {
+  function addScanHistory(entry, type = "normal") {
     const box = document.getElementById("scanHistory");
     if (!box) return;
 
     const row = document.createElement("div");
     row.className = "border rounded p-2 mb-2";
-    row.textContent = entry;
 
+    if (type === "duplicate") {
+      row.classList.add("bg-warning-subtle");
+    } else if (type === "saved") {
+      row.classList.add("bg-light", "text-dark");
+    } else {
+      row.classList.add("bg-dark", "text-light");
+    }
+
+    row.textContent = entry;
     box.prepend(row);
 
     while (box.children.length > 8) {
@@ -180,19 +201,65 @@
     }
   }
 
+  function showModal() {
+    document.getElementById("duplicateModal").classList.remove("d-none");
+  }
+
+  function closeModal() {
+    document.getElementById("duplicateModal").classList.add("d-none");
+    pendingPayload = null;
+  }
+
+  async function confirmOverride() {
+    if (!pendingPayload) return;
+
+    try {
+      const data = await sendToBackend(pendingPayload, true);
+
+      if (!data.success) {
+        throw new Error(data.error || "Override failed");
+      }
+
+      toast("✓ Override saved", 2200);
+      beepSuccess();
+      haptic([80, 40, 80]);
+
+      addScanHistory(
+        `${new Date().toLocaleTimeString()} | OVERRIDE | ${pendingPayload.studentCode} | ${pendingPayload.sfNumber} | ${pendingPayload.staffResponsible}`,
+        "saved"
+      );
+
+      const savedStaff = document.getElementById("staffResponsible").value;
+      document.getElementById("InventoryForm").reset();
+      document.getElementById("staffResponsible").value = savedStaff;
+
+      lastResult = "";
+      lastScanTime = 0;
+      currentScanTarget = "studentCode";
+      updateScanTargetBadge();
+
+      pendingPayload = null;
+      closeModal();
+    } catch (e) {
+      console.error(e);
+      toast("⚠ Override failed", 2200);
+    }
+  }
+
   async function startScanner() {
     try {
-      updateScanTargetBadge("Loading...");
+      updateScanTargetBadge("Loading camera...");
       qrScanner = new Html5Qrcode("qr-reader");
 
       const cameras = await Html5Qrcode.getCameras();
-      let selected = cameras[cameras.length - 1].id;
+      if (!cameras || cameras.length === 0) throw new Error("No camera found");
 
-      const backCam = cameras.find(cam => /back|rear/i.test(cam.label));
-      if (backCam) selected = backCam.id;
+      let selectedCamera = cameras[cameras.length - 1].id;
+      const backCam = cameras.find(cam => /back|rear|environment/i.test(cam.label || ""));
+      if (backCam) selectedCamera = backCam.id;
 
       await qrScanner.start(
-        selected,
+        selectedCamera,
         {
           fps: 10,
           qrbox: 250,
@@ -200,32 +267,42 @@
             Html5QrcodeSupportedFormats.QR_CODE,
             Html5QrcodeSupportedFormats.CODE_128,
             Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.EAN_13
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8
           ]
         },
-        onScanSuccess
+        onScanSuccess,
+        () => {}
       );
 
       updateScanTargetBadge();
-    } catch (e) {
-      toast("Camera failed");
+    } catch (err) {
+      console.error(err);
+      updateScanTargetBadge("Camera failed");
+      toast("Camera failed", 2200);
     }
   }
 
-  function onScanSuccess(text) {
+  function onScanSuccess(decodedText) {
     const now = Date.now();
-    if (text === lastResult && now - lastScanTime < 1000) return;
+    if (decodedText === lastResult && now - lastScanTime < 1000) return;
 
-    lastResult = text;
+    lastResult = decodedText;
     lastScanTime = now;
 
     const field = document.getElementById(currentScanTarget);
+    if (!field) return;
 
-    field.value = currentScanTarget === "sfNumber"
-      ? extractSfNumber(text)
-      : text;
+    if (currentScanTarget === "sfNumber") {
+      field.value = extractSfNumber(decodedText);
+    } else {
+      field.value = decodedText;
+    }
 
-    haptic();
+    haptic([50]);
+
+    field.classList.add("flash-success");
+    setTimeout(() => field.classList.remove("flash-success"), 600);
 
     if (currentScanTarget === "studentCode") {
       currentScanTarget = "sfNumber";
@@ -233,74 +310,96 @@
     }
   }
 
-  async function sendToBackend(payload, isOverride = false) {
+  async function sendToBackend(payload, force = false) {
     const res = await fetch(API_URL, {
       method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ ...payload, force: isOverride })
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8"
+      },
+      body: JSON.stringify({
+        ...payload,
+        force: force
+      })
     });
+
     return res.json();
   }
 
-  document.getElementById("InventoryForm").addEventListener("submit", async (e) => {
+  document.getElementById("InventoryForm").addEventListener("submit", async function(e) {
     e.preventDefault();
 
     const studentCode = document.getElementById("studentCode").value.trim();
     const sfNumber = document.getElementById("sfNumber").value.trim();
     const staffResponsible = document.getElementById("staffResponsible").value.trim();
     const specialNotes = document.getElementById("specialNotes").value.trim();
+    const btn = document.getElementById("submitBtn");
 
-    if (!studentCode) return toast("Scan Student Code");
-    if (!sfNumber) return toast("Scan SF");
-    if (!staffResponsible) return toast("Select staff");
+    if (!studentCode) {
+      toast("Please scan Student Code");
+      return;
+    }
+    if (!sfNumber) {
+      toast("Please scan SF number");
+      return;
+    }
+    if (!staffResponsible) {
+      toast("Please select staff");
+      return;
+    }
 
-    const payload = { studentCode, sfNumber, staffResponsible, specialNotes };
+    const payload = {
+      studentCode,
+      sfNumber,
+      staffResponsible,
+      specialNotes
+    };
 
-    // ⚡ Instant save UX（先顯示成功）
-    toast("✓ Saved");
-    beepSuccess();
-
-    addScanHistory(`${studentCode} | ${sfNumber} | ${staffResponsible}`);
-
-    const savedStaff = staffResponsible;
-    document.getElementById("InventoryForm").reset();
-    document.getElementById("staffResponsible").value = savedStaff;
-
-    currentScanTarget = "studentCode";
-    updateScanTargetBadge();
+    btn.disabled = true;
+    btn.textContent = "Saving...";
 
     try {
-      const data = await sendToBackend(payload);
+      const data = await sendToBackend(payload, false);
 
       if (!data.success) {
         if (data.duplicate) {
           pendingPayload = payload;
-          toast("⚠ Duplicate - tap again to override");
+          addScanHistory(
+            `${new Date().toLocaleTimeString()} | DUPLICATE | ${studentCode} | ${sfNumber} | ${staffResponsible}`,
+            "duplicate"
+          );
+          showModal();
           return;
         }
-        throw new Error(data.error);
+        throw new Error(data.error || "Unknown error");
       }
 
+      toast("✓ Saved", 1800);
+      beepSuccess();
+      haptic([80]);
+
+      addScanHistory(
+        `${new Date().toLocaleTimeString()} | ${studentCode} | ${sfNumber} | ${staffResponsible}`,
+        "saved"
+      );
+
+      const savedStaff = document.getElementById("staffResponsible").value;
+      document.getElementById("InventoryForm").reset();
+      document.getElementById("staffResponsible").value = savedStaff;
+
+      lastResult = "";
+      lastScanTime = 0;
+      currentScanTarget = "studentCode";
+      updateScanTargetBadge();
     } catch (err) {
       console.error(err);
-      toast("⚠ Save failed");
+      toast("⚠ Save failed", 2200);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Submit";
     }
   });
 
-  // 👇 override（再按 submit）
-  document.getElementById("submitBtn").addEventListener("click", async () => {
-    if (!pendingPayload) return;
-
-    try {
-      await sendToBackend(pendingPayload, true);
-      toast("✓ Override saved");
-      pendingPayload = null;
-    } catch (e) {
-      toast("⚠ Override failed");
-    }
-  });
-
-  document.getElementById("staffResponsible").addEventListener("change", function () {
+  document.getElementById("staffResponsible").addEventListener("change", function() {
     localStorage.setItem("staffResponsible", this.value);
   });
 
