@@ -101,6 +101,11 @@
 
       <button type="submit" class="btn btn-primary mb-3 w-100" id="submitBtn">Submit</button>
     </form>
+
+      <div class="mt-4">
+        <h6>Recent scans</h6>
+        <div id="scanHistory"></div>
+      </div>
   </div>
 
 <script>
@@ -111,12 +116,28 @@
   let lastScanTime = 0;
   let currentScanTarget = "studentCode";
 
+  let pendingPayload = null; // for duplicate override
+
   function toast(msg = "✓ Saved") {
     const t = document.createElement("div");
     t.className = "toast-msg";
     t.textContent = msg;
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 1600);
+  }
+
+  function beepSuccess() {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(800, ctx.currentTime);
+    osc.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.08);
+  }
+
+  function haptic() {
+    navigator.vibrate?.([60]);
   }
 
   function setScanTarget(target) {
@@ -127,9 +148,9 @@
   function updateScanTargetBadge(extraText = "") {
     const badge = document.getElementById("scanTargetBadge");
     let baseText = currentScanTarget === "studentCode"
-      ? "Currently scanning: Student Code"
-      : "Currently scanning: SF number";
-    badge.textContent = extraText ? `${baseText} | ${extraText}` : baseText;
+      ? "Student Code"
+      : "SF number";
+    badge.textContent = extraText ? `${baseText} | ${extraText}` : `Scanning: ${baseText}`;
   }
 
   function extractSfNumber(text) {
@@ -140,27 +161,38 @@
   function restoreStaffSelection() {
     const saved = localStorage.getItem("staffResponsible");
     if (saved) {
-      const staffField = document.getElementById("staffResponsible");
-      if (staffField) {
-        staffField.value = saved;
-      }
+      document.getElementById("staffResponsible").value = saved;
+    }
+  }
+
+  function addScanHistory(entry) {
+    const box = document.getElementById("scanHistory");
+    if (!box) return;
+
+    const row = document.createElement("div");
+    row.className = "border rounded p-2 mb-2";
+    row.textContent = entry;
+
+    box.prepend(row);
+
+    while (box.children.length > 8) {
+      box.removeChild(box.lastChild);
     }
   }
 
   async function startScanner() {
     try {
-      updateScanTargetBadge("Loading camera...");
+      updateScanTargetBadge("Loading...");
       qrScanner = new Html5Qrcode("qr-reader");
 
       const cameras = await Html5Qrcode.getCameras();
-      if (!cameras || cameras.length === 0) throw new Error("No camera found");
+      let selected = cameras[cameras.length - 1].id;
 
-      let selectedCamera = cameras[cameras.length - 1].id;
-      const backCam = cameras.find(cam => /back|rear|environment/gi.test(cam.label || ""));
-      if (backCam) selectedCamera = backCam.id;
+      const backCam = cameras.find(cam => /back|rear/i.test(cam.label));
+      if (backCam) selected = backCam.id;
 
       await qrScanner.start(
-        selectedCamera,
+        selected,
         {
           fps: 10,
           qrbox: 250,
@@ -168,42 +200,32 @@
             Html5QrcodeSupportedFormats.QR_CODE,
             Html5QrcodeSupportedFormats.CODE_128,
             Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8
+            Html5QrcodeSupportedFormats.EAN_13
           ]
         },
-        onScanSuccess,
-        () => {}
+        onScanSuccess
       );
 
       updateScanTargetBadge();
-    } catch (err) {
-      console.error(err);
-      updateScanTargetBadge("Camera failed");
+    } catch (e) {
       toast("Camera failed");
     }
   }
 
-  function onScanSuccess(decodedText) {
+  function onScanSuccess(text) {
     const now = Date.now();
-    if (decodedText === lastResult && now - lastScanTime < 1000) return;
+    if (text === lastResult && now - lastScanTime < 1000) return;
 
-    lastResult = decodedText;
+    lastResult = text;
     lastScanTime = now;
 
     const field = document.getElementById(currentScanTarget);
-    if (!field) return;
 
-    if (currentScanTarget === "sfNumber") {
-      field.value = extractSfNumber(decodedText);
-    } else {
-      field.value = decodedText;
-    }
+    field.value = currentScanTarget === "sfNumber"
+      ? extractSfNumber(text)
+      : text;
 
-    navigator.vibrate?.(80);
-
-    field.classList.add("flash-success");
-    setTimeout(() => field.classList.remove("flash-success"), 600);
+    haptic();
 
     if (currentScanTarget === "studentCode") {
       currentScanTarget = "sfNumber";
@@ -211,80 +233,79 @@
     }
   }
 
-  document.getElementById("InventoryForm").addEventListener("submit", async function(e) {
+  async function sendToBackend(payload, isOverride = false) {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ ...payload, force: isOverride })
+    });
+    return res.json();
+  }
+
+  document.getElementById("InventoryForm").addEventListener("submit", async (e) => {
     e.preventDefault();
 
     const studentCode = document.getElementById("studentCode").value.trim();
     const sfNumber = document.getElementById("sfNumber").value.trim();
     const staffResponsible = document.getElementById("staffResponsible").value.trim();
     const specialNotes = document.getElementById("specialNotes").value.trim();
-    const btn = document.getElementById("submitBtn");
 
-    if (!studentCode) {
-      toast("Please scan Student Code");
-      return;
-    }
-    if (!sfNumber) {
-      toast("Please scan SF number");
-      return;
-    }
-    if (!staffResponsible) {
-      toast("Please select staff");
-      return;
-    }
+    if (!studentCode) return toast("Scan Student Code");
+    if (!sfNumber) return toast("Scan SF");
+    if (!staffResponsible) return toast("Select staff");
 
-    btn.disabled = true;
-    btn.textContent = "Saving...";
+    const payload = { studentCode, sfNumber, staffResponsible, specialNotes };
+
+    // ⚡ Instant save UX（先顯示成功）
+    toast("✓ Saved");
+    beepSuccess();
+
+    addScanHistory(`${studentCode} | ${sfNumber} | ${staffResponsible}`);
+
+    const savedStaff = staffResponsible;
+    document.getElementById("InventoryForm").reset();
+    document.getElementById("staffResponsible").value = savedStaff;
+
+    currentScanTarget = "studentCode";
+    updateScanTargetBadge();
 
     try {
-      const res = await fetch(API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain;charset=utf-8"
-        },
-        body: JSON.stringify({
-          studentCode,
-          sfNumber,
-          staffResponsible,
-          specialNotes
-        })
-      });
-
-      const data = await res.json();
+      const data = await sendToBackend(payload);
 
       if (!data.success) {
         if (data.duplicate) {
-          toast("⚠ Duplicate Student Code");
+          pendingPayload = payload;
+          toast("⚠ Duplicate - tap again to override");
           return;
         }
-        throw new Error(data.error || "Unknown error");
+        throw new Error(data.error);
       }
 
-      toast("✓ Saved");
-
-      const savedStaff = document.getElementById("staffResponsible").value;
-      document.getElementById("InventoryForm").reset();
-      document.getElementById("staffResponsible").value = savedStaff;
-
-      lastResult = "";
-      lastScanTime = 0;
-      currentScanTarget = "studentCode";
-      updateScanTargetBadge();
     } catch (err) {
       console.error(err);
-      toast("⚠ Error - try again");
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Submit";
+      toast("⚠ Save failed");
     }
   });
 
-  document.getElementById("staffResponsible").addEventListener("change", function() {
+  // 👇 override（再按 submit）
+  document.getElementById("submitBtn").addEventListener("click", async () => {
+    if (!pendingPayload) return;
+
+    try {
+      await sendToBackend(pendingPayload, true);
+      toast("✓ Override saved");
+      pendingPayload = null;
+    } catch (e) {
+      toast("⚠ Override failed");
+    }
+  });
+
+  document.getElementById("staffResponsible").addEventListener("change", function () {
     localStorage.setItem("staffResponsible", this.value);
   });
 
-  updateScanTargetBadge();
   restoreStaffSelection();
+  updateScanTargetBadge();
   startScanner();
 </script>
 </body>
