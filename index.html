@@ -96,17 +96,29 @@
       </div>
 
       <div class="mb-3 input-group">
-        <span class="input-group-text bg-primary text-white"><i class="bi bi-person-badge"></i></span>
-        <select class="form-select" id="staffResponsible" required>
+        <span class="input-group-text bg-primary text-white">
+          <i class="bi bi-person-badge"></i>
+        </span>
+
+        <select class="form-select" id="staffResponsible" required onchange="handleStaffChange(this)">
           <option value="" selected disabled>Select staff responsible</option>
           <option value="Lena">Lena</option>
           <option value="Jennifer">Jennifer</option>
           <option value="Anna">Anna</option>
           <option value="Dora">Dora</option>
           <option value="Cherry">Cherry</option>
+          <option value="Lemon Tea">Lemon Tea</option>
           <option value="Max">Max</option>
-          <option value="Natalie">Natalie</option>
-        </select>
+          <option value="__other__">Other...</option>
+      </select>
+      </div>
+
+      <!-- 👇 hidden input -->
+      <div class="mb-3 input-group d-none" id="otherStaffWrapper">
+        <span class="input-group-text bg-secondary text-white">
+          <i class="bi bi-pencil"></i>
+        </span>
+        <input type="text" class="form-control" id="otherStaffInput" placeholder="Enter staff name">
       </div>
 
       <div class="mb-3 input-group">
@@ -118,8 +130,8 @@
     </form>
 
       <div class="mt-4">
-        <h6>Recent scans</h6>
-        <div id="scanHistory"></div>
+        <h6 class="text-secondary">Recent scans</h6>
+        <div id="scanHistory" class="small" style="max-height:150px; overflow-y:auto;"></div>
       </div>
   </div>
 
@@ -185,63 +197,90 @@
     return match ? match[1] : text;
   }
 
-  function restoreStaffSelection() {
-    const saved = localStorage.getItem("staffResponsible");
-    if (saved) {
-      const staffField = document.getElementById("staffResponsible");
-      if (staffField) staffField.value = saved;
+  function handleStaffChange(select) {
+    const wrapper = document.getElementById("otherStaffWrapper");
+    const otherInput = document.getElementById("otherStaffInput");
+
+    if (select.value === "__other__") {
+      wrapper.classList.remove("d-none");
+      otherInput.focus();
+    } else {
+      wrapper.classList.add("d-none");
+      otherInput.value = "";
+      localStorage.setItem("staffResponsible", select.value);
     }
   }
 
-function addScanHistory(entry, type = "normal") {
-  const box = document.getElementById("scanHistory");
-  if (!box) return;
+  function restoreStaffSelection() {
+    const saved = localStorage.getItem("staffResponsible");
+    const select = document.getElementById("staffResponsible");
+    const wrapper = document.getElementById("otherStaffWrapper");
+    const otherInput = document.getElementById("otherStaffInput");
 
-  const row = document.createElement("div");
-  row.className = "border rounded p-2 mb-2";
+    if (!saved || !select) return;
 
-  if (type === "duplicate") {
-    row.style.background = "#fff3cd";
-    row.style.color = "#664d03";
-    row.style.borderColor = "#ffecb5";
-  } else if (type === "saved") {
-    row.style.background = "#f8f9fa";
-    row.style.color = "#212529";
-    row.style.borderColor = "#dee2e6";
-  } else {
-    row.style.background = "#212529";
-    row.style.color = "#f8f9fa";
-    row.style.borderColor = "#495057";
+    const optionExists = [...select.options].some(opt => opt.value === saved);
+
+    if (optionExists) {
+      select.value = saved;
+      wrapper.classList.add("d-none");
+      otherInput.value = "";
+    } else {
+      select.value = "__other__";
+      wrapper.classList.remove("d-none");
+      otherInput.value = saved;
+    }
   }
 
-  row.textContent = entry;
-  box.prepend(row);
+  function addScanHistory(entry, type = "normal") {
+    const box = document.getElementById("scanHistory");
+    if (!box) return;
 
-  while (box.children.length > 8) {
-    box.removeChild(box.lastChild);
+    const row = document.createElement("div");
+    row.className = "border rounded p-2 mb-2";
+
+    if (type === "duplicate") {
+      row.style.background = "#fff3cd";
+      row.style.color = "#664d03";
+      row.style.borderColor = "#ffecb5";
+    } else if (type === "saved") {
+      row.style.background = "#f8f9fa";
+      row.style.color = "#212529";
+      row.style.borderColor = "#dee2e6";
+    } else {
+      row.style.background = "#212529";
+      row.style.color = "#f8f9fa";
+      row.style.borderColor = "#495057";
+    }
+
+    row.textContent = entry;
+    box.prepend(row);
+
+    while (box.children.length > 8) {
+      box.removeChild(box.lastChild);
+    }
   }
-}
 
-function showModal(studentCode = "") {
-  const modal = document.getElementById("duplicateModal");
-  const text = document.getElementById("duplicateModalText");
+  function showModal(studentCode = "") {
+    const modal = document.getElementById("duplicateModal");
+    const text = document.getElementById("duplicateModalText");
 
-  if (text && studentCode) {
-    text.innerHTML = `Student Code <b>${studentCode}</b> already exists.<br>Override?`;
+    if (text && studentCode) {
+      text.innerHTML = `Student Code <b>${studentCode}</b> already exists.<br>Override?`;
+    }
+
+    if (modal) {
+      modal.style.display = "block";
+    }
   }
 
-  if (modal) {
-    modal.style.display = "block";
+  function closeModal() {
+    const modal = document.getElementById("duplicateModal");
+    if (modal) {
+      modal.style.display = "none";
+    }
+    pendingPayload = null;
   }
-}
-
-function closeModal() {
-  const modal = document.getElementById("duplicateModal");
-  if (modal) {
-    modal.style.display = "none";
-  }
-  pendingPayload = null;
-}
 
   async function confirmOverride() {
     if (!pendingPayload) return;
@@ -262,9 +301,24 @@ function closeModal() {
         "saved"
       );
 
-      const savedStaff = document.getElementById("staffResponsible").value;
+      localStorage.setItem("staffResponsible", pendingPayload.staffResponsible);
+
+      const savedStaff = pendingPayload.staffResponsible;
+      const select = document.getElementById("staffResponsible");
+      const wrapper = document.getElementById("otherStaffWrapper");
+      const otherInput = document.getElementById("otherStaffInput");
+
       document.getElementById("InventoryForm").reset();
-      document.getElementById("staffResponsible").value = savedStaff;
+
+      if ([...select.options].some(opt => opt.value === savedStaff)) {
+        select.value = savedStaff;
+        wrapper.classList.add("d-none");
+        otherInput.value = "";
+      } else {
+        select.value = "__other__";
+        wrapper.classList.remove("d-none");
+        otherInput.value = savedStaff;
+      }
 
       lastResult = "";
       lastScanTime = 0;
@@ -363,7 +417,14 @@ function closeModal() {
 
     const studentCode = document.getElementById("studentCode").value.trim();
     const sfNumber = document.getElementById("sfNumber").value.trim();
-    const staffResponsible = document.getElementById("staffResponsible").value.trim();
+
+    let staffResponsible = document.getElementById("staffResponsible").value;
+    if (staffResponsible === "__other__") {
+      staffResponsible = document.getElementById("otherStaffInput").value.trim();
+    } else {
+      staffResponsible = staffResponsible.trim();
+    }
+
     const specialNotes = document.getElementById("specialNotes").value.trim();
     const btn = document.getElementById("submitBtn");
 
@@ -376,7 +437,7 @@ function closeModal() {
       return;
     }
     if (!staffResponsible) {
-      toast("Please select staff");
+      toast("Please select or enter staff name");
       return;
     }
 
@@ -415,9 +476,23 @@ function closeModal() {
         "saved"
       );
 
-      const savedStaff = document.getElementById("staffResponsible").value;
+      localStorage.setItem("staffResponsible", staffResponsible);
+
+      const select = document.getElementById("staffResponsible");
+      const wrapper = document.getElementById("otherStaffWrapper");
+      const otherInput = document.getElementById("otherStaffInput");
+
       document.getElementById("InventoryForm").reset();
-      document.getElementById("staffResponsible").value = savedStaff;
+
+      if ([...select.options].some(opt => opt.value === staffResponsible)) {
+        select.value = staffResponsible;
+        wrapper.classList.add("d-none");
+        otherInput.value = "";
+      } else {
+        select.value = "__other__";
+        wrapper.classList.remove("d-none");
+        otherInput.value = staffResponsible;
+      }
 
       lastResult = "";
       lastScanTime = 0;
@@ -432,8 +507,11 @@ function closeModal() {
     }
   });
 
-  document.getElementById("staffResponsible").addEventListener("change", function() {
-    localStorage.setItem("staffResponsible", this.value);
+  document.getElementById("otherStaffInput").addEventListener("input", function() {
+    const val = this.value.trim();
+    if (val) {
+      localStorage.setItem("staffResponsible", val);
+    }
   });
 
   restoreStaffSelection();
