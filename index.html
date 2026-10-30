@@ -373,6 +373,7 @@
       }
       cameraIndex = index;
 
+      // 細嘅 Student Code QR 要高解像度先讀到；預設只有 640x480
       await qrScanner.start(
         cameraList[cameraIndex].id,
         {
@@ -380,11 +381,27 @@
           qrbox: (w, h) => {
             const size = Math.floor(Math.min(w, h) * 0.8);
             return { width: size, height: size };
+          },
+          videoConstraints: {
+            deviceId: { exact: cameraList[cameraIndex].id },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
           }
         },
         onScanSuccess,
         () => {}
       );
+
+      // 放大 2 倍：手機可以拎遠啲（對到焦）而個 QR 仍然夠大
+      try {
+        const caps = qrScanner.getRunningTrackCapabilities();
+        if (caps && caps.zoom) {
+          const zoom = Math.min(2, caps.zoom.max);
+          await qrScanner.applyVideoConstraints({ advanced: [{ zoom: zoom }] });
+        }
+      } catch (e) {
+        console.log("zoom skipped", e);
+      }
 
       localStorage.setItem("cameraId", cameraList[cameraIndex].id);
       document.getElementById("switchCameraBtn").style.display = cameraList.length > 1 ? "" : "none";
