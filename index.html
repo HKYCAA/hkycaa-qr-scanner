@@ -65,6 +65,7 @@
 
     <div class="mt-3 mb-2">
       <span class="badge bg-warning text-dark" id="scanTargetBadge">Currently scanning: Student Code</span>
+      <button type="button" class="btn btn-sm btn-outline-light ms-2" id="switchCameraBtn" onclick="switchCamera()">Switch camera</button>
     </div>
 
 <div id="duplicateModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:99999;">
@@ -333,41 +334,78 @@
     }
   }
 
-  async function startScanner() {
+  // 多鏡頭手機（例如 iPhone Pro）唔好揀超廣角／長焦，佢哋近距離對唔到焦
+  let cameraList = [];
+  let cameraIndex = -1;
+
+  function pickMainBackCamera(cameras) {
+    const back = cameras.filter(cam => /back|rear|environment|後/i.test(cam.label || ""));
+    const pool = back.length ? back : cameras;
+    const main = pool.find(cam => !/ultra|tele|dual|triple|超廣角|長焦|雙|三/i.test(cam.label || ""));
+    return cameras.indexOf(main || pool[0]);
+  }
+
+  async function startScanner(index) {
     try {
       updateScanTargetBadge("Loading camera...");
-      qrScanner = new Html5Qrcode("qr-reader");
-
-      const cameras = await Html5Qrcode.getCameras();
-      if (!cameras || cameras.length === 0) throw new Error("No camera found");
-
-      let selectedCamera = cameras[cameras.length - 1].id;
-      const backCam = cameras.find(cam => /back|rear|environment/i.test(cam.label || ""));
-      if (backCam) selectedCamera = backCam.id;
-
-      await qrScanner.start(
-        selectedCamera,
-        {
-          fps: 10,
-          qrbox: 250,
+      if (!qrScanner) {
+        // formatsToSupport 要放喺呢度先生效；有原生 BarcodeDetector 就用，快好多
+        qrScanner = new Html5Qrcode("qr-reader", {
           formatsToSupport: [
             Html5QrcodeSupportedFormats.QR_CODE,
             Html5QrcodeSupportedFormats.CODE_128,
             Html5QrcodeSupportedFormats.CODE_39,
             Html5QrcodeSupportedFormats.EAN_13,
             Html5QrcodeSupportedFormats.EAN_8
-          ]
+          ],
+          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          verbose: false
+        });
+      }
+
+      cameraList = await Html5Qrcode.getCameras();
+      if (!cameraList || cameraList.length === 0) throw new Error("No camera found");
+
+      if (index === undefined) {
+        const savedId = localStorage.getItem("cameraId");
+        const savedIndex = cameraList.findIndex(cam => cam.id === savedId);
+        index = savedIndex >= 0 ? savedIndex : pickMainBackCamera(cameraList);
+      }
+      cameraIndex = index;
+
+      await qrScanner.start(
+        cameraList[cameraIndex].id,
+        {
+          fps: 15,
+          qrbox: (w, h) => {
+            const size = Math.floor(Math.min(w, h) * 0.8);
+            return { width: size, height: size };
+          }
         },
         onScanSuccess,
         () => {}
       );
 
+      localStorage.setItem("cameraId", cameraList[cameraIndex].id);
+      document.getElementById("switchCameraBtn").style.display = cameraList.length > 1 ? "" : "none";
       updateScanTargetBadge();
     } catch (err) {
       console.error(err);
       updateScanTargetBadge("Camera failed");
       toast("Camera failed", 2200);
     }
+  }
+
+  async function switchCamera() {
+    if (!cameraList.length) return;
+    try {
+      if (qrScanner && qrScanner.isScanning) await qrScanner.stop();
+    } catch (e) {
+      console.error(e);
+    }
+    const next = (cameraIndex + 1) % cameraList.length;
+    await startScanner(next);
+    toast(cameraList[next].label || ("Camera " + (next + 1)), 1800);
   }
 
   function onScanSuccess(decodedText) {
